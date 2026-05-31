@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>Guitar Tuner PWA</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            text-align: center;
+            max-width: 600px;
+            width: 100%;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 40px;
+            color: #00d4ff;
+        }
+        
+        .note-display {
+            font-size: 8rem;
+            font-weight: bold;
+            margin: 40px 0;
+            color: #00ff88;
+            text-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+            min-height: 150px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .frequency {
+            font-size: 2rem;
+            color: #00d4ff;
+            margin-bottom: 40px;
+        }
+        
+        .status {
+            font-size: 1.2rem;
+            color: #ffa500;
+            margin-bottom: 20px;
+            min-height: 30px;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #00d4ff 0%, #00ff88 100%);
+            border: none;
+            color: #1a1a2e;
+            font-size: 1.5rem;
+            font-weight: bold;
+            padding: 20px 40px;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.4);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 212, 255, 0.6);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button.active {
+            background: linear-gradient(135deg, #ff4444 0%, #ff6b6b 100%);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎸 Guitar Tuner</h1>
+        <div class="note-display" id="note-display">--</div>
+        <div class="frequency" id="frequency">-- Hz</div>
+        <div class="status" id="status"></div>
+        <button id="start-btn">Start Tuner</button>
+    </div>
+
+    <script>
+        let audioContext;
+        let analyser;
+        let microphone;
+        let scriptProcessor;
+        let isListening = false;
+        let holdTimeout = null;
+        let isHolding = false;
+
+        const startBtn = document.getElementById('start-btn');
+        const noteDisplay = document.getElementById('note-display');
+        const frequencyDisplay = document.getElementById('frequency');
+        const statusDisplay = document.getElementById('status');
+
+        // Standard guitar tuning frequencies
+        const guitarFrequencies = [
+            { note: 'E2', freq: 82.41 },
+            { note: 'A2', freq: 110.00 },
+            { note: 'D3', freq: 146.83 },
+            { note: 'G3', freq: 196.00 },
+            { note: 'B3', freq: 246.94 },
+            { note: 'E4', freq: 329.63 }
+        ];
+
+        startBtn.addEventListener('click', toggleTuner);
+
+        async function toggleTuner() {
+            if (!isListening) {
+                await startTuner();
+            } else {
+                stopTuner();
+            }
+        }
+
+        async function startTuner() {
+            try {
+                statusDisplay.textContent = 'Requesting microphone access...';
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                analyser.fftSize = 4096;
+                const bufferLength = analyser.fftSize;
+                const buffer = new Float32Array(bufferLength);
+
+                microphone.connect(analyser);
+                analyser.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+
+                scriptProcessor.onaudioprocess = function() {
+                    if (!isHolding) {
+                        analyser.getFloatTimeDomainData(buffer);
+                        processAudio(buffer);
+                    }
+                };
+
+                isListening = true;
+                startBtn.textContent = 'Stop Tuner';
+                startBtn.classList.add('active');
+                statusDisplay.textContent = 'Listening...';
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                statusDisplay.textContent = 'Error: Could not access microphone';
+            }
+        }
+
+        function stopTuner() {
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                scriptProcessor = null;
+            }
+            if (analyser) {
+                analyser.disconnect();
+                analyser = null;
+            }
+            if (microphone) {
+                microphone.disconnect();
+                microphone = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (holdTimeout) {
+                clearTimeout(holdTimeout);
+                holdTimeout = null;
+            }
+
+            isListening = false;
+            isHolding = false;
+            startBtn.textContent = 'Start Tuner';
+            startBtn.classList.remove('active');
+            noteDisplay.textContent = '--';
+            frequencyDisplay.textContent = '-- Hz';
+            statusDisplay.textContent = '';
+        }
+
+        function processAudio(buffer) {
+            const frequency = autoCorrelate(buffer, audioContext.sampleRate);
+            
+            if (frequency > 0) {
+                const note = frequencyToNote(frequency);
+                
+                // Check if frequency matches any guitar string (±1 Hz tolerance)
+                const matchedString = guitarFrequencies.find(
+                    gs => Math.abs(frequency - gs.freq) <= 1
+                );
+
+                if (matchedString) {
+                    // Hold the display for 3 seconds
+                    noteDisplay.textContent = note;
+                    frequencyDisplay.textContent = `${frequency.toFixed(2)} Hz`;
+                    
+                    isHolding = true;
+                    
+                    if (holdTimeout) {
+                        clearTimeout(holdTimeout);
+                    }
+                    
+                    holdTimeout = setTimeout(() => {
+                        isHolding = false;
+                        holdTimeout = null;
+                    }, 3000);
+                } else if (!isHolding) {
+                    // Only update if not holding
+                    noteDisplay.textContent = note;
+                    frequencyDisplay.textContent = `${frequency.toFixed(2)} Hz`;
+                }
+            } else if (!isHolding) {
+                noteDisplay.textContent = '--';
+                frequencyDisplay.textContent = '-- Hz';
+            }
+        }
+
+        function autoCorrelate(buffer, sampleRate) {
+            const SIZE = buffer.length;
+            const MAX_SAMPLES = Math.floor(SIZE / 2);
+            let best_offset = -1;
+            let best_correlation = 0;
+            let rms = 0;
+
+            for (let i = 0; i < SIZE; i++) {
+                const val = buffer[i];
+                rms += val * val;
+            }
+            rms = Math.sqrt(rms / SIZE);
+            
+            if (rms < 0.01) return -1;
+
+            let lastCorrelation = 1;
+            for (let offset = 1; offset < MAX_SAMPLES; offset++) {
+                let correlation = 0;
+
+                for (let i = 0; i < MAX_SAMPLES; i++) {
+                    correlation += Math.abs(buffer[i] - buffer[i + offset]);
+                }
+
+                correlation = 1 - (correlation / MAX_SAMPLES);
+                
+                if (correlation > 0.9 && correlation > lastCorrelation) {
+                    const foundGoodCorrelation = correlation > best_correlation;
+                    if (foundGoodCorrelation) {
+                        best_correlation = correlation;
+                        best_offset = offset;
+                    }
+                }
+                
+                lastCorrelation = correlation;
+            }
+
+            if (best_correlation > 0.01) {
+                return sampleRate / best_offset;
+            }
+            return -1;
+        }
+
+        function frequencyToNote(frequency) {
+            const A4 = 440;
+            const C0 = A4 * Math.pow(2, -4.75);
+            const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+            
+            const halfSteps = 12 * Math.log2(frequency / C0);
+            const noteIndex = Math.round(halfSteps) % 12;
+            const octave = Math.floor(Math.round(halfSteps) / 12);
+            
+            return noteNames[noteIndex] + octave;
+        }
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js')
+                .then(reg => console.log('Service Worker registered'))
+                .catch(err => console.log('Service Worker registration failed'));
+        }
+    </script>
+</body>
+</html>
